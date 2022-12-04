@@ -1,0 +1,120 @@
+name: PyFrm install and update test
+
+on:
+  workflow_dispatch:
+
+env:
+  REL_TAG: "20211017"
+  D_DIR: "build_tools/docker/test_pyfrm_basic"
+
+jobs:
+  on_linux:
+    strategy:
+      fail-fast: true
+      matrix:
+        i: [
+          { "os": "debian", "ver": "10.11", "arch": "amd64", "ex_pckgs": "" },
+          { "os": "debian", "ver": "10.11", "arch": "arm64", "ex_pckgs": "" },
+          { "os": "debian", "ver": "11.2", "arch": "amd64", "ex_pckgs": "" },
+          { "os": "debian", "ver": "11.2", "arch": "arm64", "ex_pckgs": "" },
+          { "os": "ubuntu", "ver": "21.10", "arch": "amd64", "ex_pckgs": "" },
+          { "os": "ubuntu", "ver": "21.10", "arch": "arm64", "ex_pckgs": "" },
+          { "os": "ubuntu", "ver": "22.04", "arch": "amd64", "ex_pckgs": "" },
+          { "os": "ubuntu", "ver": "22.04", "arch": "arm64", "ex_pckgs": "" },
+          { "os": "fedora", "ver": "35", "arch": "amd64", "ex_pckgs": "libxcrypt-compat" },
+          { "os": "fedora", "ver": "35", "arch": "arm64", "ex_pckgs": "libxcrypt-compat" },
+          { "os": "amazonlinux", "ver": "latest", "arch": "amd64", "ex_pckgs": "" },
+          { "os": "amazonlinux", "ver": "latest", "arch": "arm64", "ex_pckgs": "" },
+          { "os": "alpine", "ver": "3.15", "arch": "amd64", "ex_pckgs": "" },
+#          { "os": "alpine", "ver": "3.15", "arch": "arm64", "ex_pckgs": "" },
+          { "os": "alpine", "ver": "3.13", "arch": "amd64", "ex_pckgs": "" },
+#          { "os": "alpine", "ver": "3.13", "arch": "arm64", "ex_pckgs": "" },
+          { "os": "oraclelinux", "ver": "8", "arch": "amd64", "ex_pckgs": "" },
+          { "os": "oraclelinux", "ver": "8", "arch": "arm64", "ex_pckgs": "" },
+          { "os": "photon", "ver": "latest", "arch": "amd64", "ex_pckgs": "python3-xml" },
+          { "os": "photon", "ver": "latest", "arch": "arm64", "ex_pckgs": "python3-xml" },
+        ]
+    runs-on: ubuntu-latest
+    name: 🐍 • ${{ matrix.i['os'] }} • ${{ matrix.i['ver'] }} • ${{ matrix.i['arch'] }}
+    env:
+      KEY_HEAD: ${{ matrix.i['os'] }}-${{ matrix.i['ver'] }}-${{ matrix.i['arch'] }}-test_pyfrm_basic
+      D_TAG: ${{ matrix.i['os'] }}-${{ matrix.i['ver'] }}-${{ matrix.i['arch'] }}:test_pyfrm_basic
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up QEMU
+        if: matrix.i['arch'] == 'arm64'
+        uses: docker/setup-qemu-action@v1
+        with:
+          platforms: arm64
+
+      - name: Preparing debian
+        if: matrix.i['os'] == 'debian' || matrix.i['os'] == 'ubuntu'
+        run: |
+          echo OS_PACKAGES="sudo wget zstd python3-minimal python3-distutils" >> $GITHUB_ENV
+          echo UPDATE_CMD="apt update" >> $GITHUB_ENV
+          echo INSTALL_CMD="apt install -y" >> $GITHUB_ENV
+          echo PIP_NAME="python3-pip" >> $GITHUB_ENV
+
+      - name: Preparing musli
+        if: matrix.i['os'] == 'alpine'
+        run: |
+          echo OS_PACKAGES="sudo wget zstd python3 apache2 py3-cffi" >> $GITHUB_ENV
+          echo UPDATE_CMD="apk update" >> $GITHUB_ENV
+          echo INSTALL_CMD="apk add --no-cache" >> $GITHUB_ENV
+#          echo PIP_NAME="py3-pip" >> $GITHUB_ENV   # waiting for greenlet to have binary wheels.
+
+      - name: Preparing centos
+        if: matrix.i['os'] != 'debian' && matrix.i['os'] != 'ubuntu' && matrix.i['os'] != 'alpine'
+        run: |
+          echo OS_PACKAGES="sudo wget zstd python3 httpd" >> $GITHUB_ENV
+          echo UPDATE_CMD="yum update -y" >> $GITHUB_ENV
+          echo INSTALL_CMD="yum install -y" >> $GITHUB_ENV
+          echo PIP_NAME="python3-pip" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+        with:
+          buildkitd-flags: --debug
+          install: true
+
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ env.KEY_HEAD }}-${{ hashFiles(format('{0}/*.Dockerfile', env.D_DIR)) }}
+
+      - uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image
+        id: build
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          push: true
+          file: ${{ env.D_DIR }}/base.Dockerfile
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.D_TAG }}
+          platforms: linux/${{ matrix.i['arch'] }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+          build-args: |
+            BASE_IMAGE=${{ matrix.i['os'] }}:${{ matrix.i['ver'] }}
+            UPDATE_CMD=${{ env.UPDATE_CMD }}
+            INSTALL_CMD=${{ env.INSTALL_CMD }}
+            OS_PACKAGES=${{ env.OS_PACKAGES }} ${{ matrix.i['ex_pckgs'] }}
+
+      - name: Temp fix - Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      - name: Test
+        run: |
+          docker run --rm \
+          -e REL_TAG -e INSTALL_CMD -e PIP_NAME -e M_OS_NAME=${{ matrix.i['os'] }} \
+          -v $GITHUB_WORKSPACE:/host \
+          ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.D_TAG }} \
+          python3 /host/${{ env.D_DIR }}/entry.py

@@ -1,0 +1,9 @@
+numpy>=1.21.1,<=1.22.1
+pillow
+scipy
+pywavelets
+pillow_heif
+asn1crypto
+cryptography
+pynacl
+imagehash
